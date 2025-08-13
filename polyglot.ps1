@@ -19,7 +19,8 @@ $global:polyglotFunctions = @{
     "pdf-png"   = { param($f1, $f2, $out) create_PDF_PNG_Polyglot -pdfPath $f1 -pngPath $f2 -outputPath $out }
     "zip-png"   = { param($f1, $f2, $out) create_ZIP_PNG_Polyglot -zipPath $f1 -pngPath $f2 -outputPath $out } 
     "zip-mp4"   = { param($f1, $f2, $out) create_ZIP_MP4_Polyglot -zipPath $f1 -mp4Path $f2 -outputPath $out }
-    
+    #"pdf-mp4"   = { param($f1, $f2, $out) create_PDF_MP4_Polyglot -pdfPath $f1 -mp4Path $f2 -outputPath $out } almost impossible -> will make it possible
+    "zip-mp3"   = { param($f1, $f2, $out) create_ZIP_MP3_Polyglot -zipPath $f1 -mp3Path $f2 -outputPath $out }
 }
 
 
@@ -72,18 +73,18 @@ function enter_file_paths{
 }
 
 function files2_menu{
-    Write-Host "Choose file to be embedded in (file a2)"
+    Write-Host "Choose file to be embedded in (file 2)"
     Write-Host "[1] .zip ( will need to rename to .rar or .7z as .zip is hella strict on the signature like why the f-)"
     Write-Host "[2] .jpeg"
     Write-Host "[3] .png"
     Write-Host "[4] .mp4"
+    Write-Host "[5] .mp3"
     $choice = Read-Host "Enter your choice"
     switch($choice){
         1{
             $global:file2ext = "zip"
             enter_file_paths
         }
-        
         2{
             $global:file2ext = "jpeg"
             enter_file_paths
@@ -96,13 +97,16 @@ function files2_menu{
             $global:file2ext = "mp4"
             enter_file_paths
         }
+        5{
+            $global:file2ext = "mp3"
+            enter_file_paths
+        }
         default{
             Write-Host "Invalid choice, please try again."
             files2_menu
         }
     }
 }
-
 function files1_menu{
     Write-Host "
     (                                       
@@ -113,7 +117,7 @@ function files1_menu{
 | _ \ ((_)| | )(_)) (()(_)| | ((_)| |_   
 |  _// _ \| || || |/ _` | | |/ _ \|  _|  
 |_|  \___/|_| \_, |\__, | |_|\___/ \__|  
-               |__/ |___/                 
+              |__/ |___/                 
 
     "
     Write-Host "Choose a file to be embedded (file 1)"
@@ -177,7 +181,6 @@ function modify_ZIP_EOCD_for_comment {
     }
 
     # Extract original EOCD and get current comment length
-    $originalEOCD = $zipBytes[$eocdOffset..($zipBytes.Length - 1)]
     $originalCommentLength = [BitConverter]::ToUInt16($zipBytes[($eocdOffset + 20)..($eocdOffset + 21)], 0)
     
     Write-Host "Original comment length: $originalCommentLength bytes" -ForegroundColor Cyan
@@ -191,11 +194,19 @@ function modify_ZIP_EOCD_for_comment {
         $commentData[0..65534] 
     }
 
-    # Build modified ZIP structure
-    $zipWithoutEOCD = $zipBytes[0..($eocdOffset - 1)]
+    # **CRITICAL FIX: Proper ZIP structure assembly**
     
-    # Create modified EOCD with new comment
-    $modifiedEOCD = $originalEOCD[0..19]  # Keep first 20 bytes (everything except comment length)
+    # Part 1: ZIP data without old EOCD and old comment
+    $zipWithoutOldEOCDAndComment = if ($originalCommentLength -gt 0) {
+        # Remove old EOCD + old comment
+        $zipBytes[0..($eocdOffset - 1)]
+    } else {
+        # Remove old EOCD (no old comment to remove)
+        $zipBytes[0..($eocdOffset - 1)]
+    }
+    
+    # Part 2: Create new EOCD with updated comment length
+    $newEOCD = $zipBytes[$eocdOffset..($eocdOffset + 19)]  # EOCD without comment length and comment
     
     # Set new comment length (little-endian format)
     $newCommentLength = [uint16]$actualCommentData.Length
@@ -203,21 +214,21 @@ function modify_ZIP_EOCD_for_comment {
     if (-not [BitConverter]::IsLittleEndian) {
         [Array]::Reverse($commentLengthBytes)
     }
-    $modifiedEOCD += $commentLengthBytes
+    $newEOCD += $commentLengthBytes
+    
+    # **CORRECTED ASSEMBLY ORDER: [ZIP_DATA] + [NEW_EOCD] + [COMMENT_DATA]**
+    $modifiedZipBytes = $zipWithoutOldEOCDAndComment + $newEOCD + $actualCommentData
 
-    # Assemble final structure: [ZIP without EOCD] + [Comment Data] + [Modified EOCD]
-    $modifiedZipBytes = $zipWithoutEOCD + $actualCommentData + $modifiedEOCD
-
-    #Write-Host " ZIP EOCD modification completed" -ForegroundColor Green
-    #Write-Host "  Original ZIP size: $($zipBytes.Length) bytes" -ForegroundColor White
-    #Write-Host "  Modified ZIP size: $($modifiedZipBytes.Length) bytes" -ForegroundColor White
-    #Write-Host "  Comment embedded: $($actualCommentData.Length) bytes" -ForegroundColor White
+    Write-Host "ZIP EOCD modification completed" -ForegroundColor Green
+    Write-Host "Original ZIP size: $($zipBytes.Length) bytes" -ForegroundColor White
+    Write-Host "Modified ZIP size: $($modifiedZipBytes.Length) bytes" -ForegroundColor White
+    Write-Host "Comment embedded: $($actualCommentData.Length) bytes" -ForegroundColor White
 
     return @{
         ModifiedZipBytes = $modifiedZipBytes
         CommentData = $actualCommentData
         CommentLength = $actualCommentData.Length
-        EOCDOffset = $eocdOffset
+        EOCDOffset = ($zipWithoutOldEOCDAndComment.Length)  # New EOCD location
         OriginalCommentLength = $originalCommentLength
     }
 }
@@ -478,8 +489,6 @@ function create_ZIP_JPEG_Polyglot{
     
 }
 
-
-
 # __ + PNG
 
 # Helper function to calculate CRC32 (required for PNG chunks)
@@ -710,8 +719,7 @@ function create_ZIP_PNG_Polyglot {
 
     # Write output
     [System.IO.File]::WriteAllBytes($outputPath, $global:polyglotBytes)
-    Write-Output "Polyglot created at $outputPath"
-    
+        
 }
 
 
@@ -757,9 +765,66 @@ function create_ZIP_MP4_Polyglot {
     
     # Write output
     [System.IO.File]::WriteAllBytes($outputPath, $global:polyglotBytes)
-    Write-Output "Polyglot created at $outputPath"
     
 }
+
+
+# __ + MP3
+function create_ZIP_MP3_Polyglot {
+    param([string]$zipPath, [string]$mp3Path, [string]$outputPath)
+    
+    # Read and validate files
+
+    $mp3Bytes = [System.IO.File]::ReadAllBytes($mp3Path)
+    $zipBytes = [System.IO.File]::ReadAllBytes($zipPath)
+
+
+    # Validate MP3 signature (ID3 header or MP3 frame sync)
+    $mp3Valid = $false
+    
+    # Check for ID3v2 header (ID3)
+    if ($mp3Bytes.Length -ge 3 -and 
+        $mp3Bytes[0] -eq 0x49 -and $mp3Bytes[1] -eq 0x44 -and $mp3Bytes[2] -eq 0x33) {
+        $mp3Valid = $true
+        Write-Host "Found ID3v2 header at start of MP3" -ForegroundColor Green
+    } 
+    # Check for MP3 frame sync (FF Fx where x >= 8)
+    elseif ($mp3Bytes.Length -ge 2 -and $mp3Bytes[0] -eq 0xFF -and ($mp3Bytes[1] -band 0xE0) -eq 0xE0) {
+        $mp3Valid = $true
+        Write-Host "Found MP3 frame sync at start of file" -ForegroundColor Green
+    }
+    # Check for ID3v1 tag at end of file
+    elseif ($mp3Bytes.Length -ge 128) {
+        $tagStart = $mp3Bytes.Length - 128
+        if ($mp3Bytes[$tagStart] -eq 0x54 -and $mp3Bytes[$tagStart + 1] -eq 0x41 -and $mp3Bytes[$tagStart + 2] -eq 0x47) {
+            $mp3Valid = $true
+            Write-Host "Found ID3v1 tag, assuming valid MP3" -ForegroundColor Green
+        }
+    }
+
+    # Validate ZIP signature
+    if ($zipBytes.Length -lt 4 -or $zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
+        Write-Host "Error: Invalid ZIP file - missing PK signature" -ForegroundColor Red
+        return
+    }
+    
+    if (-not $mp3Valid) {
+        Write-Host "Warning: MP3 file validation failed - continuing anyway" -ForegroundColor Yellow
+    }
+    
+
+    # **FIXED APPROACH: Use simple append method to preserve ZIP structure**
+    Write-Host "Using simple append method (preserves ZIP extractability)" -ForegroundColor Yellow
+    $global:polyglotBytes = $mp3Bytes
+    $zipSeparator = [System.Text.Encoding]::ASCII.GetBytes("`n`n% ZIP ARCHIVE DATA FOLLOWS %`n")
+    $global:polyglotBytes += $zipSeparator
+    $global:polyglotBytes += $zipBytes
+
+    # Write output
+    [System.IO.File]::WriteAllBytes($outputPath, $global:polyglotBytes)
+    
+}
+
 
 
 files1_menu
